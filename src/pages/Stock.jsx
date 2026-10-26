@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { Empty, Field, Modal, NumberInput, ProductThumb, Stat } from '../components/ui.jsx'
 import { dateLabel, duration, money, number, today } from '../lib/format.js'
-import { emptyStock, perUnit } from '../lib/stock.js'
+import { emptyStock, perUnit, salesHistory } from '../lib/stock.js'
 import { useStore } from '../store.jsx'
 
 const TYPES = { entrada: 'Producción', venta: 'Venta', ajuste: 'Ajuste' }
 
 export default function Stock() {
-  const { products, stock, movements, addMovement, deleteMovement } = useStore()
+  const { products, orders, stock, movements, addMovement, deleteMovement } = useStore()
   const [entry, setEntry] = useState(null)
   const [query, setQuery] = useState('')
   const byId = Object.fromEntries(products.map((p) => [p.id, p]))
@@ -22,7 +22,7 @@ export default function Stock() {
   const value = all.reduce((t, { p, s }) => t + Math.max(0, s.stock) * p.price, 0)
   const sold = all.reduce((t, { s }) => t + s.sold, 0)
   const out = all.filter(({ s }) => s.stock <= 0).length
-  const history = [...movements].sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id)).slice(0, 100)
+  const history = [...movements, ...salesHistory(orders)].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 100)
 
   if (!products.length) {
     return (

@@ -1,144 +1,223 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_COSTS, DEFAULT_PIECE } from './lib/calc.js'
-import { today, uid } from './lib/format.js'
+import * as db from './lib/db.js'
+import { today } from './lib/format.js'
 import { seedProducts } from './lib/seed.js'
 import { stockSummary } from './lib/stock.js'
+import { supabase } from './lib/supabase.js'
 
-const KEY = 'd3dprint-data-v1'
+export const LEGACY_KEY = 'd3dprint-data-v1'
 
 export const DEFAULT_BUSINESS = {
-  name: 'Mi taller 3D',
+  name: 'D&D',
   phone: '',
   address: '',
   footer: '¡Gracias por tu compra!',
 }
 
-const initial = {
-  costs: DEFAULT_COSTS,
-  piece: DEFAULT_PIECE,
-  business: DEFAULT_BUSINESS,
-  products: [],
-  orders: [],
-  movements: [],
-  nextOrderNumber: 1,
-}
-
-function load() {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (!raw) return initial
-    const data = JSON.parse(raw)
-    return {
-      ...initial,
-      ...data,
-      costs: { ...DEFAULT_COSTS, ...data.costs },
-      piece: { ...DEFAULT_PIECE, ...data.piece },
-      business: { ...DEFAULT_BUSINESS, ...data.business },
-    }
-  } catch {
-    return initial
-  }
-}
+const newId = () => crypto.randomUUID()
 
 const StoreContext = createContext(null)
 
-export function StoreProvider({ children }) {
-  const [data, setData] = useState(load)
+export function StoreProvider({ session, children }) {
+  const userId = session.user.id
+  const [status, setStatus] = useState('loading')
+  const [products, setProducts] = useState([])
+  const [orders, setOrders] = useState([])
+  const [movements, setMovements] = useState([])
+  const [settings, setSettings] = useState({ costs: DEFAULT_COSTS, piece: DEFAULT_PIECE, business: DEFAULT_BUSINESS })
+  const settingsRef = useRef(settings)
+  const saveTimer = useRef(null)
+  const productsRef = useRef(products)
+  productsRef.current = products
 
-  useEffect(() => {
+  const refresh = useCallback(async (withSettings = false) => {
     try {
-      localStorage.setItem(KEY, JSON.stringify(data))
-    } catch {
-      alert('No se pudo guardar: el almacenamiento del navegador está lleno. Usa imágenes más pequeñas o exporta un respaldo.')
+      const data = await db.fetchAll()
+      setProducts(data.products)
+      setOrders(data.orders)
+      setMovements(data.movements)
+      if (withSettings && data.settings) {
+        const s = data.settings
+        const next = {
+          costs: { ...DEFAULT_COSTS, ...s.costs },
+          piece: { ...DEFAULT_PIECE, ...s.piece },
+          business: { ...DEFAULT_BUSINESS, ...s.business },
+        }
+        settingsRef.current = next
+        setSettings(next)
+      }
+      setStatus('ready')
+    } catch (err) {
+      console.error(err)
+      setStatus('error')
     }
-  }, [data])
+  }, [])
 
-  const update = useCallback((fn) => setData((d) => ({ ...d, ...fn(d) })), [])
+  // Initial load plus live updates when another device changes something.
+  useEffect(() => {
+    refresh(true)
+    let timer
+    const channel = supabase
+      .channel('dd-data')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => schedule())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => schedule())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'movements' }, () => schedule())
+      .subscribe()
+    const schedule = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => refresh(), 400)
+    }
+    return () => {
+      clearTimeout(timer)
+      supabase.removeChannel(channel)
+    }
+  }, [refresh])
+
+  // Writes are optimistic: the screen updates at once and reloads from the server if saving fails.
+  const run = useCallback(
+    async (fn) => {
+      try {
+        await fn()
+        return true
+      } catch (err) {
+        console.error(err)
+        alert(`No se pudo guardar en la nube: ${err.message || err}`)
+        refresh()
+        return false
+      }
+    },
+    [refresh],
+  )
+
+  const setSetting = useCallback(
+    (key, value) => {
+      const next = { ...settingsRef.current, [key]: value }
+      settingsRef.current = next
+      setSettings(next)
+      clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(() => run(() => db.saveSettings(userId, settingsRef.current)), 800)
+    },
+    [run, userId],
+  )
 
   const actions = useMemo(
     () => ({
-      setCosts: (costs) => update(() => ({ costs })),
-      setPiece: (piece) => update(() => ({ piece })),
-      setBusiness: (business) => update(() => ({ business })),
+      setCosts: (v) => setSetting('costs', v),
+      setPiece: (v) => setSetting('piece', v),
+      setBusiness: (v) => setSetting('business', v),
 
-      // Returns the product id, creating one for new products.
+      // Returns the product id right away; the cloud write continues in the background.
       saveProduct: (product, initialStock = 0) => {
-        const id = product.id || uid()
-        update((d) => {
-          if (d.products.some((p) => p.id === id)) {
-            return { products: d.products.map((p) => (p.id === id ? { ...p, ...product } : p)) }
-          }
-          const movements =
-            initialStock > 0
-              ? [...d.movements, { id: uid(), productId: id, type: 'entrada', qty: initialStock, date: today(), note: 'Stock inicial' }]
-              : d.movements
-          return { products: [...d.products, { ...product, id, createdAt: new Date().toISOString() }], movements }
+        const id = product.id || newId()
+        if (productsRef.current.some((p) => p.id === id)) {
+          setProducts((l) => l.map((p) => (p.id === id ? { ...p, ...product } : p)))
+          run(() => db.update('products', { ...product, id }))
+          return id
+        }
+        const created = { ...product, id }
+        const entry = initialStock > 0 && { id: newId(), productId: id, type: 'entrada', qty: initialStock, date: today(), note: 'Stock inicial' }
+        setProducts((l) => [...l, created])
+        if (entry) setMovements((m) => [...m, entry])
+        run(async () => {
+          await db.insert('products', [created])
+          if (entry) await db.insert('movements', [entry])
         })
         return id
       },
-      deleteProduct: (id) =>
-        update((d) => ({
-          products: d.products.filter((p) => p.id !== id),
-          movements: d.movements.filter((m) => m.productId !== id || m.orderId),
-        })),
-      loadSampleProducts: () => update((d) => ({ products: [...d.products, ...seedProducts(uid)] })),
+      deleteProduct: (id) => {
+        setProducts((l) => l.filter((p) => p.id !== id))
+        setMovements((l) => l.filter((m) => m.productId !== id))
+        run(() => db.remove('products', id))
+      },
+      loadSampleProducts: () => {
+        const sample = seedProducts(newId)
+        setProducts((l) => [...l, ...sample])
+        run(() => db.insert('products', sample))
+      },
 
-      addMovement: (movement) =>
-        update((d) => ({ movements: [...d.movements, { id: uid(), date: today(), ...movement }] })),
-      deleteMovement: (id) => update((d) => ({ movements: d.movements.filter((m) => m.id !== id) })),
+      addMovement: (movement) => {
+        const m = { id: newId(), date: today(), ...movement }
+        setMovements((l) => [...l, m])
+        run(() => db.insert('movements', [m]))
+      },
+      deleteMovement: (id) => {
+        setMovements((l) => l.filter((m) => m.id !== id))
+        run(() => db.remove('movements', id))
+      },
 
+      // New orders wait for the database, which assigns the invoice number.
       saveOrder: (order) =>
-        update((d) => {
-          const exists = order.id && d.orders.some((o) => o.id === order.id)
-          const saved = exists ? order : { ...order, id: uid(), number: d.nextOrderNumber }
-          const orders = exists ? d.orders.map((o) => (o.id === order.id ? saved : o)) : [...d.orders, saved]
-          return {
-            orders,
-            nextOrderNumber: exists ? d.nextOrderNumber : d.nextOrderNumber + 1,
-            movements: syncOrderMovements(d.movements, saved),
+        run(async () => {
+          if (order.id) {
+            setOrders((l) => l.map((o) => (o.id === order.id ? order : o)))
+            await db.update('orders', order)
+          } else {
+            const [saved] = await db.insert('orders', [{ ...order, id: newId() }])
+            setOrders((l) => (l.some((o) => o.id === saved.id) ? l : [...l, saved]))
           }
         }),
-      setOrderStatus: (id, status) =>
-        update((d) => {
-          const order = { ...d.orders.find((o) => o.id === id), status }
-          return {
-            orders: d.orders.map((o) => (o.id === id ? order : o)),
-            movements: syncOrderMovements(d.movements, order),
-          }
-        }),
-      deleteOrder: (id) =>
-        update((d) => ({
-          orders: d.orders.filter((o) => o.id !== id),
-          movements: d.movements.filter((m) => m.orderId !== id),
-        })),
+      setOrderStatus: (id, status) => {
+        setOrders((l) => l.map((o) => (o.id === id ? { ...o, status } : o)))
+        run(() => db.update('orders', { id, status }))
+      },
+      deleteOrder: (id) => {
+        setOrders((l) => l.filter((o) => o.id !== id))
+        run(() => db.remove('orders', id))
+      },
 
-      importData: (incoming) => setData({ ...initial, ...incoming }),
-      resetAll: () => setData(initial),
+      importData: (incoming) =>
+        run(async () => {
+          setStatus('loading')
+          const ids = {}
+          const newProducts = (incoming.products || []).map((p) => ({ ...p, id: (ids[p.id] = newId()) }))
+          const keepNumbers = orders.length === 0
+          const newOrders = (incoming.orders || []).map((o) => ({
+            ...o,
+            id: newId(),
+            number: keepNumbers ? o.number : undefined,
+            items: (o.items || []).map((i) => ({ ...i, productId: ids[i.productId] || null })),
+          }))
+          // Sales are derived from delivered orders, so only production and adjustments are imported.
+          const newMovements = (incoming.movements || [])
+            .filter((m) => m.type !== 'venta' && ids[m.productId])
+            .map((m) => ({ ...m, id: newId(), productId: ids[m.productId] }))
+          if (newProducts.length) await db.insert('products', newProducts)
+          if (newMovements.length) await db.insert('movements', newMovements)
+          for (const o of newOrders) await db.insert('orders', [o])
+          if (incoming.costs || incoming.business) {
+            const next = {
+              costs: { ...DEFAULT_COSTS, ...incoming.costs },
+              piece: { ...DEFAULT_PIECE, ...incoming.piece },
+              business: { ...DEFAULT_BUSINESS, ...incoming.business },
+            }
+            settingsRef.current = next
+            setSettings(next)
+            await db.saveSettings(userId, next)
+          }
+          await refresh()
+        }),
+      resetAll: () =>
+        run(async () => {
+          setStatus('loading')
+          await db.clearAll()
+          const next = { costs: DEFAULT_COSTS, piece: DEFAULT_PIECE, business: DEFAULT_BUSINESS }
+          settingsRef.current = next
+          setSettings(next)
+          await refresh()
+        }),
     }),
-    [update],
+    [run, setSetting, refresh, orders.length, userId],
   )
 
-  const stock = useMemo(() => stockSummary(data.movements), [data.movements])
+  const stock = useMemo(() => stockSummary(movements, orders), [movements, orders])
+  const data = { ...settings, products, orders, movements }
 
-  return <StoreContext.Provider value={{ ...data, stock, data, ...actions }}>{children}</StoreContext.Provider>
-}
-
-// A delivered order discounts its items from stock; any other status gives them back.
-function syncOrderMovements(movements, order) {
-  const rest = movements.filter((m) => m.orderId !== order.id)
-  if (order.status !== 'entregado') return rest
-  const sales = order.items
-    .filter((i) => i.productId && Number(i.qty) > 0)
-    .map((i) => ({
-      id: uid(),
-      productId: i.productId,
-      type: 'venta',
-      qty: Number(i.qty),
-      date: order.deliveredAt || order.date || today(),
-      orderId: order.id,
-      note: `Pedido #${order.number} – ${order.client}`,
-    }))
-  return [...rest, ...sales]
+  return (
+    <StoreContext.Provider value={{ ...data, data, stock, status, session, refresh, ...actions }}>
+      {children}
+    </StoreContext.Provider>
+  )
 }
 
 export const useStore = () => useContext(StoreContext)

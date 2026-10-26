@@ -1,14 +1,36 @@
-// Stock is derived from movements: production adds, sales subtract, adjustments add or subtract.
-export function stockSummary(movements) {
+// Stock = production + adjustments (movements) − units of delivered orders.
+export function stockSummary(movements, orders) {
   const map = {}
+  const get = (id) => (map[id] ??= { produced: 0, sold: 0, adjusted: 0 })
   for (const m of movements) {
-    const s = (map[m.productId] ??= { produced: 0, sold: 0, adjusted: 0 })
-    if (m.type === 'entrada') s.produced += m.qty
-    else if (m.type === 'venta') s.sold += m.qty
-    else if (m.type === 'ajuste') s.adjusted += m.qty
+    if (m.type === 'entrada') get(m.productId).produced += m.qty
+    else if (m.type === 'ajuste') get(m.productId).adjusted += m.qty
+  }
+  for (const o of orders) {
+    if (o.status !== 'entregado') continue
+    for (const i of o.items) if (i.productId) get(i.productId).sold += Number(i.qty) || 0
   }
   for (const s of Object.values(map)) s.stock = s.produced + s.adjusted - s.sold
   return map
+}
+
+// Sales from delivered orders, shaped like movements for the history list.
+export function salesHistory(orders) {
+  return orders
+    .filter((o) => o.status === 'entregado')
+    .flatMap((o) =>
+      o.items
+        .filter((i) => i.productId)
+        .map((i, n) => ({
+          id: `${o.id}-${n}`,
+          productId: i.productId,
+          type: 'venta',
+          qty: Number(i.qty) || 0,
+          date: o.date,
+          orderId: o.id,
+          note: `Pedido #${o.number} – ${o.client}`,
+        })),
+    )
 }
 
 export const emptyStock = { produced: 0, sold: 0, adjusted: 0, stock: 0 }

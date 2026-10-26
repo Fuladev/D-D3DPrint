@@ -28,7 +28,8 @@ export default function Orders() {
   // jsPDF is heavy, so the invoice module loads only when a PDF is needed.
   const download = async (o) => {
     const { buildInvoice, invoiceFileName } = await import('../lib/invoice.js')
-    buildInvoice(o, business, products).save(invoiceFileName(o))
+    const doc = await buildInvoice(o, business, products)
+    doc.save(invoiceFileName(o))
   }
 
   const share = async (o) => {
@@ -130,9 +131,8 @@ export default function Orders() {
         <OrderForm
           initial={form}
           onClose={() => setForm(null)}
-          onSave={(o) => {
-            saveOrder(o)
-            setForm(null)
+          onSave={async (o) => {
+            if (await saveOrder(o)) setForm(null)
           }}
         />
       )}
@@ -155,6 +155,7 @@ function OrderForm({ initial, onSave, onClose }) {
   })
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
   const set = (k) => (v) => setO((s) => ({ ...s, [k]: v }))
   const clients = [...new Map(orders.map((x) => [x.client, x.phone])).entries()]
 
@@ -181,7 +182,10 @@ function OrderForm({ initial, onSave, onClose }) {
     if (!o.client.trim()) return setError('Escribe el nombre del cliente.')
     const items = o.items.filter((i) => Number(i.qty) > 0).map((i) => ({ ...i, qty: Number(i.qty), price: Number(i.price) || 0 }))
     if (!items.length) return setError('Agrega al menos un producto.')
-    onSave({ ...o, client: o.client.trim(), items, discount: Number(o.discount) || 0, shipping: Number(o.shipping) || 0 })
+    setSaving(true)
+    Promise.resolve(onSave({ ...o, client: o.client.trim(), items, discount: Number(o.discount) || 0, shipping: Number(o.shipping) || 0 })).finally(() =>
+      setSaving(false),
+    )
   }
 
   return (
@@ -193,7 +197,9 @@ function OrderForm({ initial, onSave, onClose }) {
         <>
           <span className="footer-total">Total: <strong>{money(t.total)}</strong></span>
           <button type="button" className="btn" onClick={onClose}>Cancelar</button>
-          <button type="submit" form="order-form" className="btn btn-primary">Guardar pedido</button>
+          <button type="submit" form="order-form" className="btn btn-primary" disabled={saving}>
+            {saving ? 'Guardando…' : 'Guardar pedido'}
+          </button>
         </>
       }
     >

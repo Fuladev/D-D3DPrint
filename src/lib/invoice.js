@@ -1,32 +1,65 @@
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import logoUrl from '../assets/logo.svg'
 import { dateLabel, money } from './format.js'
 import { orderTotals } from './stock.js'
 
+const WINE = [99, 0, 0]
+const BEIGE = [237, 235, 221]
+const BLACK = [27, 23, 23]
+
+// Rasterizes the SVG logo in beige so it can sit on the wine-colored header.
+let logoPromise
+function beigeLogo() {
+  logoPromise ??= new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 660
+      canvas.height = 300
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      ctx.globalCompositeOperation = 'source-in'
+      ctx.fillStyle = 'rgb(237, 235, 221)'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    img.onerror = () => resolve(null)
+    img.src = logoUrl
+  })
+  return logoPromise
+}
+
 const STATUS = { pendiente: 'Pendiente', entregado: 'Entregado', cancelado: 'Cancelado' }
 
-export function buildInvoice(order, business, products) {
+export async function buildInvoice(order, business, products) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' })
   const width = doc.internal.pageSize.getWidth()
   const images = Object.fromEntries(products.map((p) => [p.id, p.image]))
+  const logo = await beigeLogo()
 
-  doc.setFillColor(79, 70, 229)
-  doc.rect(0, 0, width, 32, 'F')
-  doc.setTextColor(255)
+  doc.setFillColor(...WINE)
+  doc.rect(0, 0, width, 34, 'F')
+  let x = 14
+  if (logo) {
+    doc.addImage(logo, 'PNG', 12, 6, 48, 22)
+    x = 66
+  }
+  doc.setTextColor(...BEIGE)
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(20)
-  doc.text(business.name || 'Factura', 14, 15)
+  doc.setFontSize(16)
+  doc.text(business.name || 'D&D', x, 16)
   doc.setFont('helvetica', 'normal')
-  doc.setFontSize(10)
-  doc.text([business.phone, business.address].filter(Boolean).join('  ·  '), 14, 23)
+  doc.setFontSize(9)
+  doc.text([business.phone, business.address].filter(Boolean).join('  ·  '), x, 23, { maxWidth: width - x - 70 })
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(14)
-  doc.text(`FACTURA N.º ${String(order.number).padStart(4, '0')}`, width - 14, 15, { align: 'right' })
+  doc.setFontSize(13)
+  doc.text(`FACTURA N.º ${String(order.number).padStart(4, '0')}`, width - 14, 16, { align: 'right' })
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(10)
   doc.text(`Fecha: ${dateLabel(order.date)}`, width - 14, 23, { align: 'right' })
 
-  doc.setTextColor(30)
+  doc.setTextColor(...BLACK)
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
   doc.text('Cliente', 14, 44)
@@ -40,8 +73,9 @@ export function buildInvoice(order, business, products) {
     head: [['', 'Producto', 'Cant.', 'Precio unit.', 'Subtotal']],
     body: rows,
     theme: 'striped',
-    headStyles: { fillColor: [79, 70, 229] },
-    styles: { fontSize: 10, valign: 'middle', minCellHeight: 12 },
+    headStyles: { fillColor: WINE, textColor: BEIGE },
+    alternateRowStyles: { fillColor: [246, 245, 238] },
+    styles: { fontSize: 10, valign: 'middle', minCellHeight: 12, textColor: BLACK },
     columnStyles: {
       0: { cellWidth: 14 },
       2: { halign: 'center', cellWidth: 18 },
@@ -73,9 +107,11 @@ export function buildInvoice(order, business, products) {
   if (t.discount) line('Descuento', `- ${money(t.discount)}`)
   if (t.shipping) line('Envío', money(t.shipping))
   y += 1
-  doc.setDrawColor(200)
+  doc.setDrawColor(...WINE)
   doc.line(width - 100, y - 5, width - 14, y - 5)
+  doc.setTextColor(...WINE)
   line('TOTAL', money(t.total), true)
+  doc.setTextColor(...BLACK)
 
   if (order.note) {
     y += 4
@@ -88,7 +124,7 @@ export function buildInvoice(order, business, products) {
 
   if (business.footer) {
     doc.setFontSize(10)
-    doc.setTextColor(120)
+    doc.setTextColor(...WINE)
     doc.text(business.footer, width / 2, doc.internal.pageSize.getHeight() - 12, { align: 'center' })
   }
   return doc
@@ -122,7 +158,7 @@ export function invoiceMessage(order, business) {
 // Shares the PDF through the native share sheet (WhatsApp on phones) when available;
 // otherwise downloads it and opens a WhatsApp chat so the file can be attached.
 export async function sendInvoice(order, business, products) {
-  const doc = buildInvoice(order, business, products)
+  const doc = await buildInvoice(order, business, products)
   const name = invoiceFileName(order)
   const text = invoiceMessage(order, business)
   const file = new File([doc.output('blob')], name, { type: 'application/pdf' })
