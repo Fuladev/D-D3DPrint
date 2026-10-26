@@ -8,11 +8,12 @@ const orders = [
 const movements = [
   { productId: 'p1', type: 'entrada', qty: 10 },
   { productId: 'p1', type: 'ajuste', qty: -1 },
+  { productId: 'p1', type: 'venta', qty: 2, price: 2000 },
 ]
 
 describe('stockSummary', () => {
-  it('subtracts only delivered orders', () => {
-    expect(stockSummary(movements, orders).p1).toEqual({ produced: 10, adjusted: -1, sold: 3, stock: 6 })
+  it('subtracts counter sales and delivered orders only', () => {
+    expect(stockSummary(movements, orders).p1).toEqual({ produced: 10, adjusted: -1, sold: 5, stock: 4 })
   })
 })
 

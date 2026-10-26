@@ -5,6 +5,7 @@ import { emptyStock, perUnit, salesHistory } from '../lib/stock.js'
 import { useStore } from '../store.jsx'
 
 const TYPES = { entrada: 'Producción', venta: 'Venta', ajuste: 'Ajuste' }
+const isCounterSale = (m) => m.type === 'venta' && !m.orderId
 
 export default function Stock() {
   const { products, orders, stock, movements, addMovement, deleteMovement } = useStore()
@@ -22,6 +23,7 @@ export default function Stock() {
   const value = all.reduce((t, { p, s }) => t + Math.max(0, s.stock) * p.price, 0)
   const sold = all.reduce((t, { s }) => t + s.sold, 0)
   const out = all.filter(({ s }) => s.stock <= 0).length
+  const counterSales = movements.filter(isCounterSale).reduce((t, m) => t + m.qty * (m.price || 0), 0)
   const history = [...movements, ...salesHistory(orders)].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 100)
 
   if (!products.length) {
@@ -40,15 +42,19 @@ export default function Stock() {
       <div className="page-head">
         <div>
           <h1>Stock</h1>
-          <p className="muted">Lo que hay en bodega y lo que se ha vendido. Las ventas se descuentan al marcar un pedido como entregado.</p>
+          <p className="muted">Lo que hay en bodega y lo que se ha vendido. Las ventas se descuentan al marcar un pedido como entregado o al registrar una venta de mostrador.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setEntry({ type: 'entrada' })}>＋ Registrar producción</button>
+        <div className="actions-row">
+          <button className="btn btn-primary" onClick={() => setEntry({ type: 'venta' })}>🛒 Venta mostrador</button>
+          <button className="btn" onClick={() => setEntry({ type: 'entrada' })}>＋ Registrar producción</button>
+        </div>
       </div>
 
       <div className="stats">
         <Stat label="Unidades en stock" value={number(units)} />
         <Stat label="Valor del inventario" value={money(value)} tone="green" />
         <Stat label="Unidades vendidas" value={number(sold)} />
+        <Stat label="Ventas de mostrador" value={money(counterSales)} tone="green" />
         <Stat label="Productos agotados" value={out} tone={out ? 'red' : undefined} />
       </div>
 
@@ -88,6 +94,7 @@ export default function Stock() {
                   </td>
                   <td className="num hide-sm">{money(Math.max(0, s.stock) * p.price)}</td>
                   <td className="row-actions">
+                    <button className="btn small btn-primary" onClick={() => setEntry({ type: 'venta', productId: p.id })}>🛒 Vender</button>
                     <button className="btn small" onClick={() => setEntry({ type: 'entrada', productId: p.id })}>＋ Producir</button>
                     <button className="btn btn-ghost small" onClick={() => setEntry({ type: 'ajuste', productId: p.id })}>Ajustar</button>
                   </td>
@@ -106,9 +113,13 @@ export default function Stock() {
           <ul className="moves">
             {history.map((m) => (
               <li key={m.id}>
-                <span className={`badge badge-${m.type}`}>{TYPES[m.type]}</span>
+                <span className={`badge badge-${m.type}`}>{isCounterSale(m) ? 'Mostrador' : m.orderId ? 'Pedido' : TYPES[m.type]}</span>
                 <span className="move-name">{byId[m.productId]?.name || 'Producto eliminado'}</span>
-                <span className="muted small">{dateLabel(m.date)}{m.note ? ` · ${m.note}` : ''}</span>
+                <span className="muted small">
+                  {dateLabel(m.date)}
+                  {isCounterSale(m) && m.price ? ` · ${money(m.qty * m.price)}` : ''}
+                  {m.note ? ` · ${m.note}` : ''}
+                </span>
                 <strong className={m.type === 'venta' || m.qty < 0 ? 'neg' : 'pos'}>
                   {m.type === 'venta' ? `−${m.qty}` : m.qty > 0 ? `+${m.qty}` : m.qty}
                 </strong>
@@ -127,6 +138,7 @@ export default function Stock() {
         <MovementForm
           initial={entry}
           products={products}
+          stock={stock}
           onClose={() => setEntry(null)}
           onSave={(m) => {
             addMovement(m)
@@ -138,42 +150,55 @@ export default function Stock() {
   )
 }
 
-function MovementForm({ initial, products, onSave, onClose }) {
-  const [m, setM] = useState({ productId: products[0]?.id, qty: '', date: today(), note: '', ...initial })
+function MovementForm({ initial, products, stock, onSave, onClose }) {
+  const isSale = initial.type === 'venta'
+  const isAdjust = initial.type === 'ajuste'
+  const first = initial.productId ? products.find((p) => p.id === initial.productId) : products[0]
+  const [m, setM] = useState({ productId: first?.id, qty: isSale ? 1 : '', price: first?.price ?? 0, date: today(), note: '', ...initial })
   const [beds, setBeds] = useState('')
   const product = products.find((p) => p.id === m.productId)
-  const isAdjust = m.type === 'ajuste'
+  const available = (stock[m.productId] || emptyStock).stock
   const set = (k) => (v) => setM((s) => ({ ...s, [k]: v }))
 
   const submit = (e) => {
     e.preventDefault()
     const qty = Number(m.qty)
     if (!m.productId || !qty || (!isAdjust && qty < 0)) return
-    onSave({ ...m, qty })
+    const { price, ...rest } = m
+    onSave(isSale ? { ...rest, qty, price: Number(price) || 0 } : { ...rest, qty })
   }
 
+  const title = isSale ? 'Venta de mostrador' : isAdjust ? 'Ajuste de inventario' : 'Registrar producción'
   return (
     <Modal
-      title={isAdjust ? 'Ajuste de inventario' : 'Registrar producción'}
+      title={title}
       onClose={onClose}
       footer={
         <>
+          {isSale && <span className="footer-total">Total: <strong>{money((Number(m.qty) || 0) * (Number(m.price) || 0))}</strong></span>}
           <button type="button" className="btn" onClick={onClose}>Cancelar</button>
-          <button type="submit" form="move-form" className="btn btn-primary">Guardar</button>
+          <button type="submit" form="move-form" className="btn btn-primary">{isSale ? 'Registrar venta' : 'Guardar'}</button>
         </>
       }
     >
       <form id="move-form" onSubmit={submit} className="form-grid">
+        {isSale && <p className="info-box span-2">Venta directa sin factura: se descuenta del stock y cuenta como vendido.</p>}
         <div className="span-2">
           <Field label="Producto">
-            <select value={m.productId} onChange={(e) => set('productId')(e.target.value)}>
+            <select
+              value={m.productId}
+              onChange={(e) => {
+                const p = products.find((x) => x.id === e.target.value)
+                setM((s) => ({ ...s, productId: e.target.value, price: isSale ? p?.price ?? 0 : s.price }))
+              }}
+            >
               {[...products].sort((a, b) => a.name.localeCompare(b.name)).map((p) => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
           </Field>
         </div>
-        {!isAdjust && product?.piecesPerBed > 1 && (
+        {!isSale && !isAdjust && product?.piecesPerBed > 1 && (
           <Field label="Camas impresas" hint={`${product.piecesPerBed} piezas por cama`}>
             <NumberInput
               value={beds}
@@ -186,14 +211,23 @@ function MovementForm({ initial, products, onSave, onClose }) {
             />
           </Field>
         )}
-        <Field label={isAdjust ? 'Cantidad (+ suma, − resta)' : 'Unidades producidas'} hint={isAdjust ? 'Ej: −2 por piezas dañadas' : undefined}>
+        <Field
+          label={isSale ? 'Unidades vendidas' : isAdjust ? 'Cantidad (+ suma, − resta)' : 'Unidades producidas'}
+          hint={isSale ? `${available} en stock` : isAdjust ? 'Ej: −2 por piezas dañadas' : undefined}
+        >
           <NumberInput value={m.qty} onChange={set('qty')} step="1" min={isAdjust ? undefined : '1'} autoFocus />
         </Field>
+        {isSale && (
+          <Field label="Precio por unidad" suffix="COP">
+            <NumberInput value={m.price} onChange={set('price')} min="0" />
+          </Field>
+        )}
+        {isSale && Number(m.qty) > available && <p className="warn span-2">Estás vendiendo más de lo que hay en stock ({available}).</p>}
         <Field label="Fecha">
           <input type="date" value={m.date} onChange={(e) => set('date')(e.target.value)} />
         </Field>
         <Field label="Nota">
-          <input value={m.note} onChange={(e) => set('note')(e.target.value)} placeholder={isAdjust ? 'Motivo del ajuste' : 'Opcional'} />
+          <input value={m.note} onChange={(e) => set('note')(e.target.value)} placeholder={isSale ? 'Cliente, medio de pago… (opcional)' : isAdjust ? 'Motivo del ajuste' : 'Opcional'} />
         </Field>
       </form>
     </Modal>

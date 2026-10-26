@@ -1,10 +1,11 @@
-// Stock = production + adjustments (movements) − units of delivered orders.
+// Stock = production + adjustments − counter sales (movements) − units of delivered orders.
 export function stockSummary(movements, orders) {
   const map = {}
   const get = (id) => (map[id] ??= { produced: 0, sold: 0, adjusted: 0 })
   for (const m of movements) {
     if (m.type === 'entrada') get(m.productId).produced += m.qty
     else if (m.type === 'ajuste') get(m.productId).adjusted += m.qty
+    else if (m.type === 'venta') get(m.productId).sold += m.qty
   }
   for (const o of orders) {
     if (o.status !== 'entregado') continue

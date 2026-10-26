@@ -11,7 +11,7 @@ const FIELDS = {
     id: 'id', number: 'number', client: 'client', phone: 'phone', date: 'date', status: 'status',
     items: 'items', discount: 'discount', shipping: 'shipping', note: 'note', createdAt: 'created_at',
   },
-  movements: { id: 'id', productId: 'product_id', type: 'type', qty: 'qty', date: 'date', note: 'note' },
+  movements: { id: 'id', productId: 'product_id', type: 'type', qty: 'qty', price: 'price', date: 'date', note: 'note' },
 }
 const NUMERIC = new Set(['hours', 'minutes', 'grams', 'piecesPerBed', 'costPerBed', 'bedPrice', 'price', 'discount', 'shipping', 'qty'])
 

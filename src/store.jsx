@@ -178,9 +178,10 @@ export function StoreProvider({ session, children }) {
             number: keepNumbers ? o.number : undefined,
             items: (o.items || []).map((i) => ({ ...i, productId: ids[i.productId] || null })),
           }))
-          // Sales are derived from delivered orders, so only production and adjustments are imported.
+          // Order sales are derived from delivered orders, so only the other movements are imported.
           const newMovements = (incoming.movements || [])
-            .filter((m) => m.type !== 'venta' && ids[m.productId])
+            .filter((m) => !m.orderId && ids[m.productId])
+            .map(({ orderId, ...m }) => m)
             .map((m) => ({ ...m, id: newId(), productId: ids[m.productId] }))
           if (newProducts.length) await db.insert('products', newProducts)
           if (newMovements.length) await db.insert('movements', newMovements)
