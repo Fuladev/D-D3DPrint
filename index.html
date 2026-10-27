@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#630000" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>D&amp;D · Impresión 3D</title>
+    <script>
+      // Apply the saved theme before the first paint to avoid a flash.
+      try {
+        var t = localStorage.getItem('dd-theme')
+        document.documentElement.dataset.theme = t || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="./assets/index-DhuZoep4.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BuiO1pA1.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
